@@ -1,0 +1,70 @@
+name: Career pipeline
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 2 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: career-pipeline
+  cancel-in-progress: false
+
+jobs:
+  discover-and-score:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout orchestrator
+        uses: actions/checkout@v4
+      - name: Checkout career-ops
+        uses: actions/checkout@v4
+        with:
+          repository: career-ops-hq/career-ops
+          path: upstream/career-ops
+          # TODO: replace main with a reviewed full commit SHA.
+          ref: main
+      - name: Checkout ai-job-search
+        uses: actions/checkout@v4
+        with:
+          repository: ai-job-search-dev/ai-job-search
+          path: upstream/ai-job-search
+          # TODO: replace main with a reviewed full commit SHA.
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install scorer dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run zero-token discovery
+        working-directory: upstream/career-ops
+        run: node scan.mjs
+      - name: Score discovered listings
+        run: |
+          mkdir -p data
+          if [ -f upstream/career-ops/data/pipeline.md ]; then
+            cp upstream/career-ops/data/pipeline.md data/pipeline.md
+          fi
+          python scripts/pipeline.py --input data/pipeline.md --config config/pipeline.yml --out output
+      - name: Upload discovery and scoring results
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-queue
+          path: output/
+          retention-days: 2
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
