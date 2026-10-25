@@ -98,6 +98,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends latexmk texlive-latex-base texlive-latex-extra texlive-fonts-recommended poppler-utils
+      - name: Install upstream portal CLI dependencies
+        working-directory: upstream/ai-job-search
+        run: |
+          find .agents/skills -path '*/cli/package.json' -print0 | while IFS= read -r -d '' package_file; do
+            cli_dir="$(dirname "$package_file")"
+            (cd "$cli_dir" && bun install)
+          done
       - name: Install Claude Code
         run: npm install --global @anthropic-ai/claude-code
       - name: Restore candidate profile from Actions secrets
