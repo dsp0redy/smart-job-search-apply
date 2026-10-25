@@ -1,0 +1,139 @@
+name: Career pipeline
+
+on:
+  workflow_dispatch:
+  pull_request:
+  schedule:
+    - cron: "17 2 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: career-pipeline
+  cancel-in-progress: false
+
+jobs:
+  discover-and-score:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      has_jobs: ${{ steps.score.outputs.has_jobs }}
+    steps:
+      - name: Checkout orchestrator
+        uses: actions/checkout@v4
+      - name: Checkout career-ops
+        uses: actions/checkout@v4
+        with:
+          repository: career-ops-hq/career-ops
+          path: upstream/career-ops
+          # Pin to a reviewed full commit SHA before production use.
+          ref: main
+      - name: Checkout ai-job-search
+        uses: actions/checkout@v4
+        with:
+          repository: ai-job-search-dev/ai-job-search
+          path: upstream/ai-job-search
+          ref: master
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install scorer dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run zero-token discovery
+        working-directory: upstream/career-ops
+        run: node scan.mjs
+      - name: Score discovered listings
+        id: score
+        run: |
+          mkdir -p data
+          if [ -f upstream/career-ops/data/pipeline.md ]; then
+            cp upstream/career-ops/data/pipeline.md data/pipeline.md
+          fi
+          python scripts/pipeline.py --input data/pipeline.md --config config/pipeline.yml --out output
+          COUNT="$(python -c 'import json; print(len(json.load(open("output/qualified_jobs.json"))))')"
+          if [ "$COUNT" -gt 0 ]; then echo "has_jobs=true" >> "$GITHUB_OUTPUT"; else echo "has_jobs=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Upload discovery and scoring results
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-queue
+          path: |
+            output/job_queue.csv
+            output/qualified_jobs.json
+          retention-days: 2
+
+  prepare-drafts:
+    needs: discover-and-score
+    if: github.event_name != 'pull_request' && needs.discover-and-score.outputs.has_jobs == 'true' && vars.ENABLE_AI_DRAFTS == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout orchestrator
+        uses: actions/checkout@v4
+      - name: Download scored queue
+        uses: actions/download-artifact@v4
+        with:
+          name: job-queue
+          path: output
+      - name: Checkout ai-job-search
+        uses: actions/checkout@v4
+        with:
+          repository: ai-job-search-dev/ai-job-search
+          path: upstream/ai-job-search
+          ref: master
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+      - name: Install PDF verification tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends latexmk texlive-latex-base texlive-latex-extra texlive-fonts-recommended poppler-utils
+      - name: Install upstream portal CLI dependencies
+        working-directory: upstream/ai-job-search
+        run: |
+          find .agents/skills -path '*/cli/package.json' -print0 | while IFS= read -r -d '' package_file; do
+            cli_dir="$(dirname "$package_file")"
+            (cd "$cli_dir" && bun install)
+          done
+      - name: Install Claude Code
+        run: npm install --global @anthropic-ai/claude-code
+      - name: Restore candidate profile from Actions secrets
+        env:
+          CANDIDATE_CLAUDE_MD_B64: ${{ secrets.CANDIDATE_CLAUDE_MD_B64 }}
+          CANDIDATE_PROFILE_MD_B64: ${{ secrets.CANDIDATE_PROFILE_MD_B64 }}
+          CANDIDATE_BEHAVIORAL_PROFILE_B64: ${{ secrets.CANDIDATE_BEHAVIORAL_PROFILE_B64 }}
+          CANDIDATE_WRITING_STYLE_B64: ${{ secrets.CANDIDATE_WRITING_STYLE_B64 }}
+          CANDIDATE_MASTER_CV_TEX_B64: ${{ secrets.CANDIDATE_MASTER_CV_TEX_B64 }}
+        run: python -c "import os,base64,pathlib; root=pathlib.Path('upstream/ai-job-search'); mapping={'CANDIDATE_CLAUDE_MD_B64':'CLAUDE.md','CANDIDATE_PROFILE_MD_B64':'.claude/skills/job-application-assistant/01-candidate-profile.md','CANDIDATE_BEHAVIORAL_PROFILE_B64':'.claude/skills/job-application-assistant/02-behavioral-profile.md','CANDIDATE_WRITING_STYLE_B64':'.claude/skills/job-application-assistant/03-writing-style.md','CANDIDATE_MASTER_CV_TEX_B64':'cv/main_example.tex'}; [(root.joinpath(p).parent.mkdir(parents=True,exist_ok=True),root.joinpath(p).write_bytes(base64.b64decode(os.environ[k],validate=True))) for k,p in mapping.items() if os.environ.get(k)]"
+      - name: Prepare application drafts (never submit)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/prepare.py
+      - name: Upload drafts for human review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-drafts
+          path: output/drafts/
+          if-no-files-found: warn
+          retention-days: 2
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v

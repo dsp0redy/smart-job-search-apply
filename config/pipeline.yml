@@ -1,0 +1,30 @@
+min_relevance_score: 70
+min_description_chars: 300
+target_titles:
+  - software engineer
+  - c++ engineer
+  - embedded software engineer
+  - linux systems engineer
+  - systems software engineer
+  - platform engineer
+  - systems software developer
+skills:
+  - c++
+  - c++17
+  - linux
+  - embedded
+  - system programming
+  - networking
+  - grpc
+  - containers
+  - docker
+  - podman
+  - oci
+  - multithreading
+  - tls
+  - tpm
+  - c
+  - python
+exclude_terms:
+  - unpaid internship
+  - unpaid
