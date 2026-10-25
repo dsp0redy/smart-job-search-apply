@@ -4,7 +4,8 @@ on:
   workflow_dispatch:
   pull_request:
   schedule:
-    - cron: "17 2 * * 1-5"
+    - cron: "47 7 * * 1-5"
+      timezone: "Asia/Kolkata"
 
 permissions:
   contents: read
